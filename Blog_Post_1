@@ -1,0 +1,535 @@
+##@P60 - Blog Post 1 - Bespoke Top 50 Research
+##Started:  08/19/2019
+
+library(QuantTools)
+library(readxl)
+library(lubridate)
+library(dplyr)
+library(forecast)
+library(devtools)
+library(tidyr)
+library(gapminder)
+library(ggalt)
+library(forcats)
+library(R.utils)
+library(png)
+library(grid)
+library(ggpubr)
+library(scales)
+library(bbplot)
+
+##For graphing info, see https://bbc.github.io/rcookbook/
+##devtools::install_github('bbc/bbplot')
+
+##Global Variables
+from <- '2007-01-01'
+to <- '2019-08-21'
+nDays <- 365
+
+#-----1. make a list of files in the folder that are stock scores
+temp = list.files(pattern = "^Bespoke") ##temp = list.files(pattern = ".xls")
+
+##----Ceate a list of Top40 stocks (from each week)
+y <-
+  lapply(temp,function(x)(
+    read_excel(x,sheet = "Top50")
+  ))
+
+##----Extract Entry Date from the File Name
+u <-
+  lapply(temp, function(a)(
+    ifelse(nchar(a)>27,substr(a,19,24),paste0("0",substr(a,19,23)))
+  ))
+
+t <-
+  lapply(u,function(x)(
+    mdy(x)
+  ))
+
+##---extract all of the stock symbols and export as csv
+w <- lapply(y,function(x)(x[1]))
+w <- lapply(w,function(x)(x <- x[-1,])) ##Remove first row
+total.score <- lapply(y,function(x)(x[12])) ##pull Bespoke Total score
+total.score <- lapply(total.score,function(x)(x <- x[-1,])) ##Remove first row
+top.stock <- lapply(w,function(x)(nth(x[[1]],n=1)))
+all.symbols <- unique(unlist(lapply(w,function(a)(unlist(a[[1:length(a)]])))))
+write.csv2(all.symbols,file = "All_Symbols.csv",quote = FALSE,row.names = FALSE)
+
+##---Import all stock history from QCollector as txt files
+
+#-----2. Lookup all of the historical stock symbols
+##v <- lapply(w,function(b)(lapply(b[[1:length(b)]],function(a)(lapply(a,function(x)(get_yahoo_data(x,from,to)))))))
+temp.2 = list.files(pattern="*.txt") ##make a list of all files with stock history
+myfiles = lapply(temp.2, read.csv,header=TRUE, sep="",stringsAsFactors=FALSE) ##read-in all files as a list
+
+##-----Create one flattened list of all the stocks with entry dates
+temp.3 <- lapply(temp.2,function(a)(substr(a,-6,nchar(a)-6)))
+myfiles.2 <- mapply(function(a,b)(merge(a,b)),temp.3,myfiles,SIMPLIFY = F) ##
+myfiles.3 <- lapply(myfiles.2,function(x)(transform(x,as.Date(x[[2]],"%m/%d/%Y"))))
+one.list <- rbindlist(myfiles.2) ##combine all files into one big unlist
+one.list$Date <- as.Date(one.list$Date,"%m/%d/%Y")
+
+#-----3. Find Entry Values based on Recommendation
+entry.date <-
+  mapply(function(a,b)(
+    merge(unlist(a),unlist(b))),
+  t,w,SIMPLIFY = F)
+
+all.entry <- rbindlist(entry.date)
+
+entry.values <- merge(all.entry,one.list,by.x = c("y","x"),by.y = c("x","Date"),all.x = TRUE) #get OHLC on entry day per symbol
+
+entry.values$Open <- as.double(entry.values$Open)
+
+entry.values$High <- as.double(entry.values$High)
+
+entry.values$Low <- as.double(entry.values$Low)
+
+entry.values$Close <- as.double(entry.values$Close)
+
+#-----4. Calculate the percent return for exiting on days 1:nDays (Open to Open)
+
+##----days to look forward from Entry Date
+lookforward.days <- lapply(c(1:nDays),function(a)(
+  lapply(t,function(x)(
+    x + days(a)
+  ))
+))
+
+exit.date.Plus <-
+  lapply(c(1:nDays),function(c)(
+    mapply(function(a,b)
+      (merge(unlist(a),unlist(b))),lookforward.days[[c]],w,SIMPLIFY = F
+    )
+  ))
+
+all.exit.date.Plus <-
+  lapply(c(1:nDays),function(c)(
+    rbindlist(exit.date.Plus[[c]])
+  ))
+
+exit.values.Plus <-
+  lapply(c(1:nDays),function(a)(
+    merge(all.exit.date.Plus[[a]],one.list,by.x = c("y","x"),by.y = c("x","Date"),all.x = TRUE)
+  ))
+
+exit.values.Plus.Open <-
+  lapply(c(1:nDays),function(a)(
+    exit.values.Plus[[a]]$Open <- as.double(exit.values.Plus[[a]]$Open)
+  ))
+
+Exit.Days.Percent <-
+  lapply(exit.values.Plus.Open,function(a)(
+    a/entry.values$Open-1)
+  )
+
+Exit.Days.Percent.Sum <-
+  lapply(Exit.Days.Percent,function(x)(
+    summary(x)
+  ))
+
+Exit.Days.Points <-
+    lapply(exit.values.Plus.Open,function(a)(
+      a-entry.values$Open)
+    )
+
+Exit.Days.Points.Sum <-
+      lapply(Exit.Days.Points,function(x)(
+        summary(x)
+      ))
+
+Exit.Days.Percent.log <-
+          lapply(exit.values.Plus.Open,function(a)(
+              log(a/entry.values$Open))
+          )
+
+##---Calculate the percent return for exiting on days 1:nDays at the High (Open to High)
+exit.values.Plus.High <-
+  lapply(c(1:nDays),function(a)(
+    exit.values.Plus[[a]]$High <- as.double(exit.values.Plus[[a]]$High)
+  ))
+
+Exit.Days.Percent.High <-
+  lapply(exit.values.Plus.High,function(a)(
+    a/entry.values$High-1
+  ))
+
+Exit.Days.Percent.High.Sum <-
+  lapply(Exit.Days.Percent.High,function(x)(
+    summary(x)
+  ))
+
+#-----5. Number of Times the Stock was Recommended
+stock.frequency <-
+  lapply(all.symbols,function(a)(
+    length(which(exit.values.Plus[[1]]$y == a))
+  ))
+
+stock.frequency.table <-
+  as.data.frame(cbind(all.symbols,unlist(stock.frequency)))
+
+write.csv(stock.frequency.table,file = "Stock_Frequency_Table.csv",quote = FALSE,row.names = FALSE,sep = " ")
+
+#-----6. Cumulative Daily Returns SINCE ENTRY for Each Stock Pick (ie, Day 30 Value/Entry Value - 1)
+Cumulative.Return <-
+  lapply((1:length(Exit.Days.Percent[[1]])),function(a)(
+    lapply(Exit.Days.Percent,function(b)(
+      b[[a]]
+    ))
+  ))
+
+Cumulative.Return.2 <-
+  lapply(Cumulative.Return,function(b)(
+    as.data.frame(unlist(b),col.names = c('Cum_Return'))
+  ))
+
+##----Remove all NAs
+Cumulative.Return.3 <-
+  lapply(1:length(Cumulative.Return.2),function(a)(
+    lapply(Cumulative.Return.2[[a]],function(b)(
+      b[is.finite(b)]
+    ))
+  ))
+
+#-----7. Solve for Daily (Not Cumulative) returns
+Daily.Return <-
+  lapply(1:length(Cumulative.Return.3),function(a)(
+    lapply(Cumulative.Return.3[[a]],function(b)(lag(unlist(b),n=1))
+    ))
+  )
+
+Daily.Return.2 <-
+  mapply(function(c,d)(
+    mapply(function(a,b)(
+      a-b
+    ),c,d,SIMPLIFY = F)),
+  Cumulative.Return.3,Daily.Return,SIMPLIFY = F)
+
+Daily.Return.3 <-
+    lapply(1:length(Daily.Return.2),function(a)(
+        lapply(Daily.Return.2[[a]],function(b)(
+            b[is.finite(b)]
+        ))
+    ))
+
+##----Below is the average daily SD by stock
+Daily.Return.SD <-
+  lapply(1:length(Daily.Return.3),function(a)(
+    lapply(Daily.Return.3[[a]],function(b)(
+      sd(unlist(b),na.rm =TRUE)
+  ))
+))
+
+##----Below is the average daily return by stock
+Daily.Return.4 <-
+  lapply(1:length(Daily.Return.3),function(a)(
+    lapply(Daily.Return.3[[a]],function(b)(
+      mean(unlist(b),na.rm =TRUE)
+    ))
+  ))
+
+#-----All Days for Exit.Days.Percent
+##----Cumulative Percent Return
+q <- lapply(Exit.Days.Percent,function(x)(sum(unlist(x),na.rm = TRUE)))
+q2 <- lapply(q,function(x)(x[!(isZero(x))]))
+
+##----Average Percent Return
+q3 <- lapply(Exit.Days.Percent,function(x)(mean(unlist(x),na.rm = TRUE)*100))
+q4 <- lapply(q3,function(x)(x[is.finite(x)]))
+
+##----Total Wins
+q5 <- lapply(Exit.Days.Percent,function(x)(length(which(x>0))))
+q6 <- lapply(q5,function(x)(x[is.finite(x)]))
+
+##----Total Losses
+q7 <- lapply(Exit.Days.Percent,function(x)(length(which(x<0))))
+q8 <- lapply(q7,function(x)(x[is.finite(x)]))
+
+##----Average Point Return
+q9 <- lapply(Exit.Days.Points,function(x)(mean(unlist(x),na.rm = TRUE)*100))
+q10 <- lapply(q9,function(x)(x[is.finite(x)]))
+
+#-----Analysis at 30 Days Exit
+x.30 <- cbind(entry.values,Exit.Days.Percent[[30]])
+x2.30 <- x.30 %>% select(y,x,V2) %>% filter(!is.na(V2))
+names(x2.30) <- c("Symbol","Date","Return")
+x3.30 <- x2.30 %>% group_by(Date) %>% summarise(n = n(),average = mean(Return),total = sum(Return)*100) %>% arrange(Date)
+write.csv2(x3.30,file = "All_Stock_Summary_30_Days.csv",quote = FALSE,row.names = FALSE)
+
+##-----Output of Statistics - Exit at Day 30
+Total.Wins.30   <- length(which(x2.30$Return > 0))
+Total.Loss.30   <- length(which(x2.30$Return <= 0))
+Total.Trades.30 <- length(x2.30$Return)
+Cum.Win.30      <- sum(unlist(x2.30 %>% select(Return) %>% filter(Return > 0)))
+Cum.Loss.30     <- sum(unlist(x2.30 %>% select(Return) %>% filter(Return <= 0)))
+Avg.Win.30      <- mean(unlist(x2.30 %>% select(Return) %>% filter(Return > 0)))
+Avg.Loss.30     <- mean(unlist(x2.30 %>% select(Return) %>% filter(Return <= 0)))
+Avg.Trade.30    <- mean(unlist(x2.30 %>% select(Return)))
+Profit.Factor.30  <- Avg.Win.30/Avg.Loss.30
+Win.Percentage.30 <- Total.Wins.30/(Total.Wins.30 + Total.Loss.30)
+Cum.Return.30     <- sum(unlist(x2.30$Return))
+
+Avg.Trade.30
+Win.Percentage.30
+Profit.Factor.30
+Cum.Return.30
+
+##-----Output of Benchmark Statistics - Exit at Day 30
+Benchmark.Return.30 <- x2.30 %>% select(Symbol,Date,Return) %>% filter(Date > "2009-08-31")
+
+Annualized.Return.30 <- (1+mean(unlist(Benchmark.Return.30$Return)))^(365/30)-1
+
+Avg.Ann.SD.30 <-
+  sd(unlist(Benchmark.Return.30$Return))*sqrt(12)
+
+Sharpe.Ratio.30 <- Annualized.Return.30/Avg.Ann.SD.30
+
+Annualized.Return.30
+Avg.Ann.SD.30
+Sharpe.Ratio.30
+
+##-----Graphing the Results - Exit at Day 30
+Profit_Loss_30 <- ggplot(x3.30, aes(x = Date, y = cumsum(x3.30$total))) +
+    geom_line(colour = "#004C99", size = 1) +
+    geom_hline(yintercept = 0, size = 1, colour="#333333") +
+      scale_y_continuous(labels = function(x) paste0(x, "%")) +
+    bbc_style() +
+    labs(title="Cumulative Profit & Loss - Exit At Day 30",
+         subtitle = "Entry Weekly from 2007 - Present")
+
+finalise_plot(plot_name = Profit_Loss_30,
+    source = "Source: iQFeed.net",
+    save_filepath = "img/Profit_Loss_30.png",
+    width_pixels = 640,
+    height_pixels = 550)
+
+#-----Analysis at 90 Days Exit
+x.90 <- cbind(entry.values,Exit.Days.Percent[[90]])
+x2.90 <- x.90 %>% select(y,x,V2) %>% filter(!is.na(V2))
+names(x2.90) <- c("Symbol","Date","Return")
+x3.90 <- x2.90 %>% group_by(Date) %>% summarise(n = n(),average = mean(Return),total = sum(Return)*100) %>% arrange(Date)
+write.csv2(x3.90,file = "All_Stock_Summary_90_Days.csv",quote = FALSE,row.names = FALSE)
+
+##-----Output of Statistics - Exit at Day 90
+Total.Wins.90   <- length(which(x2.90$Return > 0))
+Total.Loss.90   <- length(which(x2.90$Return <= 0))
+Total.Trades.90 <- length(x2.90$Return)
+Cum.Win.90      <- sum(unlist(x2.90 %>% select(Return) %>% filter(Return > 0)))
+Cum.Loss.90     <- sum(unlist(x2.90 %>% select(Return) %>% filter(Return <= 0)))
+Avg.Win.90      <- mean(unlist(x2.90 %>% select(Return) %>% filter(Return > 0)))
+Avg.Loss.90     <- mean(unlist(x2.90 %>% select(Return) %>% filter(Return <= 0)))
+Avg.Trade.90    <- mean(unlist(x2.90 %>% select(Return)))
+Profit.Factor.90  <- Avg.Win.90/Avg.Loss.90
+Win.Percentage.90 <- Total.Wins.90/(Total.Wins.90 + Total.Loss.90)
+Cum.Return.90     <- sum(unlist(x2.90$Return))
+
+Avg.Trade.90
+Win.Percentage.90
+Profit.Factor.90
+Cum.Return.90
+
+##-----Output of Benchmark Statistics - Exit at Day 90
+Benchmark.Return.90 <- x2.90 %>% select(Symbol,Date,Return) %>% filter(Date > "2009-08-31")
+
+Annualized.Return.90 <- (1+mean(unlist(Benchmark.Return.90$Return)))^(365/90)-1
+
+Avg.Ann.SD.90 <-
+  sd(unlist(Benchmark.Return.90$Return))*sqrt(4)
+
+Sharpe.Ratio.90 <- Annualized.Return.90/Avg.Ann.SD.90
+
+Annualized.Return.90
+Avg.Ann.SD.90
+Sharpe.Ratio.90
+
+
+##-----Graphing the Results - Exit at Day 90
+Profit_Loss_90 <- ggplot(x3.90, aes(x = Date, y = cumsum(x3.90$total))) +
+    geom_line(colour = "#004C99", size = 1) +
+    geom_hline(yintercept = 0, size = 1, colour="#333333") +
+      scale_y_continuous(labels = function(x) paste0(x, "%")) +
+    bbc_style() +
+    labs(title="Cumulative Profit & Loss - Exit At Day 90",
+         subtitle = "Entry Weekly from 2007 - Present")
+
+finalise_plot(plot_name = Profit_Loss_90,
+    source = "Source: iQFeed.net",
+    save_filepath = "img/Profit_Loss_90.png",
+    width_pixels = 640,
+    height_pixels = 550)
+
+#-----Analysis at 180 Days Exit
+x.180 <- cbind(entry.values,Exit.Days.Percent[[181]])
+x2.180 <- x.180 %>% select(y,x,V2) %>% filter(!is.na(V2))
+names(x2.180) <- c("Symbol","Date","Return")
+x3.180 <- x2.180 %>% group_by(Date) %>% summarise(n = n(),average = mean(Return),total = sum(Return)*100) %>% arrange(Date)
+write.csv2(x3.180,file = "All_Stock_Summary_180_Days.csv",quote = FALSE,row.names = FALSE)
+
+##-----Output of Statistics - Exit at Day 180
+Total.Wins.180   <- length(which(x2.180$Return > 0))
+Total.Loss.180   <- length(which(x2.180$Return <= 0))
+Total.Trades.180 <- length(x2.180$Return)
+Cum.Win.180      <- sum(unlist(x2.180 %>% select(Return) %>% filter(Return > 0)))
+Cum.Loss.180     <- sum(unlist(x2.180 %>% select(Return) %>% filter(Return <= 0)))
+Avg.Win.180      <- mean(unlist(x2.180 %>% select(Return) %>% filter(Return > 0)))
+Avg.Loss.180     <- mean(unlist(x2.180 %>% select(Return) %>% filter(Return <= 0)))
+Avg.Trade.180    <- mean(unlist(x2.180 %>% select(Return)))
+Profit.Factor.180  <- Avg.Win.180/Avg.Loss.180
+Win.Percentage.180 <- Total.Wins.180/(Total.Wins.180 + Total.Loss.180)
+Cum.Return.180     <- sum(unlist(x2.180$Return))
+
+Avg.Trade.180
+Win.Percentage.180
+Profit.Factor.180
+Cum.Return.180
+
+##-----Output of Benchmark Statistics - Exit at Day 180
+Benchmark.Return.180 <- x2.180 %>% select(Symbol,Date,Return) %>% filter(Date > "2009-08-31")
+
+Annualized.Return.180 <- (1+mean(unlist(Benchmark.Return.180$Return),na.rm = T))^(365/180)-1
+
+Avg.Ann.SD.180 <-
+  sd(unlist(Benchmark.Return.180$Return),na.rm = T)*sqrt(2)
+
+Sharpe.Ratio.180 <- Annualized.Return.180/Avg.Ann.SD.180
+
+Annualized.Return.180
+Avg.Ann.SD.180
+Sharpe.Ratio.180
+
+
+##-----Graphing the Results - Exit at Day 180
+Profit_Loss_180 <- ggplot(x3.180, aes(x = Date, y = cumsum(x3.180$total))) +
+    geom_line(colour = "#004C99", size = 1) +
+    geom_hline(yintercept = 0, size = 1, colour="#333333") +
+      scale_y_continuous(labels = function(x) paste0(x, "%")) +
+    bbc_style() +
+    labs(title="Cumulative Profit & Loss - Exit At Day 180",
+         subtitle = "Entry Weekly from 2007 - Present")
+
+finalise_plot(plot_name = Profit_Loss_180,
+    source = "Source: iQFeed.net",
+    save_filepath = "img/Profit_Loss_180.png",
+    width_pixels = 640,
+    height_pixels = 550)
+
+#-----Analysis at 365 Days Exit
+x.365 <- cbind(entry.values,Exit.Days.Percent[[365]])
+x2.365 <- x.365 %>% select(y,x,V2) %>% filter(!is.na(V2))
+names(x2.365) <- c("Symbol","Date","Return")
+x3.365 <- x2.365 %>% group_by(Date) %>% summarise(n = n(),average = mean(Return),total = sum(Return)*100) %>% arrange(Date)
+write.csv2(x3.365,file = "All_Stock_Summary_365_Days.csv",quote = FALSE,row.names = FALSE)
+
+##-----Output of Statistics - Exit at Day 365
+Total.Wins.365   <- length(which(x2.365$Return > 0))
+Total.Loss.365   <- length(which(x2.365$Return <= 0))
+Total.Trades.365 <- length(x2.365$Return)
+Cum.Win.365      <- sum(unlist(x2.365 %>% select(Return) %>% filter(Return > 0)))
+Cum.Loss.365     <- sum(unlist(x2.365 %>% select(Return) %>% filter(Return <= 0)))
+Avg.Win.365      <- mean(unlist(x2.365 %>% select(Return) %>% filter(Return > 0)))
+Avg.Loss.365     <- mean(unlist(x2.365 %>% select(Return) %>% filter(Return <= 0)))
+Avg.Trade.365    <- mean(unlist(x2.365 %>% select(Return)))
+Profit.Factor.365  <- Avg.Win.365/Avg.Loss.365
+Win.Percentage.365 <- Total.Wins.365/(Total.Wins.365 + Total.Loss.365)
+Cum.Return.365     <- sum(unlist(x2.365$Return))
+
+Avg.Trade.365
+Win.Percentage.365
+Profit.Factor.365
+Cum.Return.365
+
+##-----Output of Benchmark Statistics - Exit at Day 365
+Benchmark.Return.365 <- x2.365 %>% select(Symbol,Date,Return) %>% filter(Date > "2009-08-31")
+
+Annualized.Return.365 <- (1+mean(unlist(Benchmark.Return.365$Return),na.rm = T))^(365/365)-1
+
+Avg.Ann.SD.365 <-
+  sd(unlist(Benchmark.Return.365$Return),na.rm = T)*sqrt(1)
+
+Sharpe.Ratio.365 <- Annualized.Return.365/Avg.Ann.SD.365
+
+Annualized.Return.365
+Avg.Ann.SD.365
+Sharpe.Ratio.365
+
+##-----Graphing the Results - Exit at Day 365
+Profit_Loss_365 <- ggplot(x3.365, aes(x = Date, y = cumsum(x3.365$total))) +
+    geom_line(colour = "#004C99", size = 1) +
+    geom_hline(yintercept = 0, size = 1, colour="#333333") +
+      scale_y_continuous(labels = function(x) paste0(x, "%")) +
+    bbc_style() +
+    labs(title="Cumulative Profit & Loss - Exit At Day 365",
+         subtitle = "Entry Weekly from 2007 - Present")
+
+finalise_plot(plot_name = Profit_Loss_365,
+    source = "Source: iQFeed.net",
+    save_filepath = "img/Profit_Loss_365.png",
+    width_pixels = 640,
+    height_pixels = 550)
+
+
+##----Yearly Graphs
+yr2017.Return     <- x2 %>% select(Symbol,Date,Return) %>% filter(Date > "2017-01-01",Date < "2018-01-01")
+yr2017.Summary    <- yr2017.Return %>% group_by(Symbol) %>% summarise(n = n(),average = mean(Return),total = sum(Return)) %>% arrange(desc(total))
+yr2017.PL.Chart   <- plot(1:length(yr2017.Return$Date),cumsum(unlist(yr2017.Return$Return)))
+yr2017.Total.Wins <- length(which(yr2017.Return$Return > 0))
+yr2017.Total.Loss <- length(which(yr2017.Return$Return <= 0))
+yr2017.AnnReturn  <- sum(unlist(yr2017.Return$Return))
+
+
+#-----Daily Return Statistics by Stock Rec
+Avg.Daily.SD <-
+  lapply(Daily.Return.3,function(a)(
+    sd(unlist(a))
+  ))
+
+Avg.Daily.SD <-
+  lapply(Avg.Daily.SD,function(b)(
+    b[is.finite(b)]
+  ))
+
+Avg.Daily.Return <-
+    lapply(Daily.Return.3,function(a)(
+      mean(unlist(a))
+    ))
+
+Avg.Daily.Return <-
+    lapply(Avg.Daily.Return,function(b)(
+      b[is.finite(b)]
+    ))
+
+Avg.Sharpe <-
+  mapply(function(a,b)(
+    (a*252)/(b*sqrt(252))),Avg.Daily.Return,Avg.Daily.SD,SIMPLIFY = F)
+
+##----Annual Percent Returns from Entry Date
+Annual.Percent <-
+  lapply(Cumulative.Return.3,function(a)(
+    last(a[[1]])
+  ))
+
+Annual.Percent <-
+  lapply(Annual.Percent,function(b)(
+    b[is.finite(b)]
+  ))
+
+Overall.Sharpe <- mean(unlist(Avg.Sharpe))
+
+Overall.Percent <- mean(unlist(Annual.Percent))
+
+##-----Graph Example Under Number 6
+Graph_ABM <- as.data.frame(cbind(1:length(Cumulative.Return.3[[2]][[1]]),cumsum(unlist(Cumulative.Return.3[[2]][[1]]))))
+
+Profit_Loss_ABM <- ggplot(Graph_ABM, aes(x = V1, y = V2)) +
+    geom_line(colour = "#004C99", size = 1) +
+    geom_hline(yintercept = 0, size = 1, colour="#333333") +
+    scale_y_continuous(labels = function(x) paste0(x, "%")) +
+    bbc_style() +
+    labs(title="ABM Cumulative Percentage Return",
+         subtitle = "Entry on 2010-07-13. Measured daily over following 252 trading days.")
+
+finalise_plot(plot_name = Profit_Loss_ABM,
+    source = "Source: iQFeed.net",
+    save_filepath = "img/Profit_Loss_ABM.png",
+    width_pixels = 640,
+    height_pixels = 550)
