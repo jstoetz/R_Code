@@ -1,0 +1,102 @@
+#############################################################
+###Triple Miss and Triple Play Performance
+###Date Started:  10/28/2019
+###jake.stoetzner@gmail.com
+###Goal:  Is it a "good" time to short a stock/sell a call/buy a put after a triple miss?
+#############################################################
+
+#<-----Load Packages----->
+library(quantmod)
+library(ggplot2)
+library(BatchGetSymbols)
+
+#<-----Set Dates & Frequency----->
+start.data  <-  "2018-01-01"
+end.data    <-  Sys.Date()
+freq.data   <-  'daily'
+
+#<-----Clean and Get Data----->
+#read in the raw data
+temp    <-  read.csv("/Users/jake_macbook_pro/Downloads/BespokeEarnings_CUSTOMSCREEN (2).csv")
+
+#create a list of symbols that can be read in and looked up
+symbols <- unlist(temp$ticker)
+ticker <- as.character(unlist(temp$ticker))
+
+#get list of dates of triple miss dates
+date <- as.Date(unlist(temp$date))
+
+#create a new environment
+dataEnv <- new.env()
+
+#get symbols from start date
+getSymbols(ticker,from = start.data,env=dataEnv)
+
+#merge the date and the daily return into a dataframe
+a <- eapply(dataEnv,function(x)(data.frame(index(x),dailyReturn(x,type="log"))))
+a <- eapply(dataEnv,function(x)(dailyReturn(x,type="log")))
+
+#<-----TRIPLE MISS ANALYSIS ----->
+#Batch download symbols - change type.return to "log" for log
+l.out   <-  BatchGetSymbols(tickers   = ticker,
+                         first.date   = start.data,
+                         last.date    = end.data,
+                         type.return  = "arit",
+                         freq.data    = freq.data)
+
+#get a list of tickers that were downloaded
+all.ticker <- l.out$df.control$ticker
+
+#filter out all data before entry date by ticker
+b <- mapply(function(a,b)(l.out$df.tickers %>% filter(ref.date > a, ticker == b)),date,ticker,SIMPLIFY = F)
+
+#create new df without the post entry date data
+b1 <- bind_rows(b)
+summary(b1$ret.closing.prices)
+
+b2 <- b1 %>% select(ref.date,ticker,ret.closing.prices) %>% group_by(ticker) %>% summarise(Mean_Daily_Return = mean(ret.closing.prices,na.rm = TRUE)*100, Cum_Daily_Return = sum(ret.closing.prices,na.rm = TRUE)*100) %>% arrange(Cum_Daily_Return)
+
+all.return.to.date <- mean(b2$Cum_Daily_Return)
+
+all.average.daily.to.date <- mean(b2$Mean_Daily_Return)
+
+all.Sharpe.Ratio <- mean(b2$Mean_Daily_Return)/sd(b2$Mean_Daily_Return)*sqrt(252)
+
+#print a chart of all of the returns
+ch.All <- ggplot(b1,aes(x = ref.date,y = ret.closing.prices)) + geom_line() + facet_wrap(~ticker,scales = 'free_y')
+tbl.All <- formattable(b2,list(`Mean_Daily_Return`= color_bar("#FA614B66")))
+
+#<-----TRIPLE MISS ANALYSIS - 10 Days----->
+#limit data to 10 days after Triple Miss
+c <- mapply(function(a,b)(l.out$df.tickers %>% filter(ref.date > a & ref.date <= a+10, ticker == b)),date,ticker,SIMPLIFY = F)
+c1 <- bind_rows(c)
+summary(c1$ret.closing.prices)
+
+#chart of all returns from 1 - 10 days (cumulative)
+c1.ch <- c1 %>% select(ref.date,ret.closing.prices) %>% mutate(Cum_Daily_Return = cumsum(ret.closing.prices), row = row_number())
+
+ch.10days.all <- ggplot(c1.ch,aes(x = row,y = Cum_Daily_Return)) + geom_line() + labs(title = "Cumulative Returns for Triple Miss Stocks from 1 to 10 Days (%)") + xlab("Day") + ylab("Cumulative Return (%)")
+
+#summarize data for 10 days after
+c2 <- c1 %>% select(ref.date,ticker,ret.closing.prices) %>% group_by(ticker) %>% summarise(Mean_Daily_Return = round(mean(ret.closing.prices,na.rm = TRUE)*100,2), Cum_Daily_Return = round(sum(ret.closing.prices,na.rm = TRUE)*100,2),Pos_Days = round(length(which(ret.closing.prices > 0)),2),Neg_Days = round(length(which(ret.closing.prices < 0)),2)  ) %>% arrange(Cum_Daily_Return)
+
+#chart for each individual stocks 10 days after with cumulative sum of return plotted
+c3 <- c1 %>% group_by(ticker) %>% mutate(Cum_Daily_Return = cumsum(ret.closing.prices))
+
+ch.10days <- ggplot(c3,aes(x = ref.date,y = Cum_Daily_Return)) + geom_point(color = "steelblue") + labs(title = "Cumulative Daily Return - Day 1 to 10 After Triple Miss") + facet_wrap(~ticker,scales = "free")
+
+TENday.Pos_Days <- sum(c2$Pos_Days)
+
+TENday.Neg_Days <- sum(c2$Neg_Days)
+
+TENday.return.to.date <- mean(c2$Cum_Daily_Return)
+
+TENday.average.daily.to.date <- mean(c2$Mean_Daily_Return)
+
+TENday.Sharpe.Ratio <- mean(c2$Mean_Daily_Return)/sd(c2$Mean_Daily_Return)*sqrt(252)
+
+TENday.Pos_Days
+TENday.Neg_Days
+TENday.return.to.date
+TENday.average.daily.to.date
+TENday.Sharpe.Ratio

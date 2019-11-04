@@ -1,0 +1,364 @@
+####################################
+#P63-Blog Post 3 - Monte Carlo Benchmarking
+#By: jake.stoetzner@gmail.com
+#Started: 09-16-2019
+#
+####################################
+
+##install.packages('devtools','TTR','QuantTools','dplyr','stringi','stringr','ggplot2','lubridate','tidyverse')
+
+library(devtools)
+library(TTR)
+library(QuantTools)
+library(dplyr)
+library(stringi)
+library(stringr)
+library(ggplot2)
+library(lubridate)
+library(data.table)
+library(zoo)
+library(xts)
+library(tidyverse)
+
+##Make sure that the IQFeed Manager is up and running - more info: http://www.iqfeed.net/index.cfm?displayaction=support&section=download
+
+#<------1. Set Up Global Variables----->
+symbols = c('QQQ')
+
+from = '2006-01-01'  ##starting date to download data
+
+to = '2019-06-30'  ##ending date of data
+
+trading_days = as.numeric(as.Date(to,format="%Y-%m-%d") - as.Date(from,format="%Y-%m-%d"))
+
+period = 'day' ###candle period tick, 1min, 5min, 10min, 15min, 30min, hour, day, week, month
+
+#<-----2. Download Stock and ETF Data----->
+
+all.stock.data <- lapply(symbols,function(x)(get_iqfeed_data(x,from,to,period)))  ##get all stock data downloaded
+
+Open <- lapply(all.stock.data, function(x)(x$open))
+
+High <- lapply(all.stock.data, function(x)(x$high))
+
+Low <- lapply(all.stock.data, function(x)(x$low))
+
+Close <- lapply(all.stock.data, function(x)(x$close))
+
+Volume <- lapply(all.stock.data, function(x)(x$volume))
+
+Date <- lapply(all.stock.data, function(x)(x$date))
+
+#<-----3. Coin Flip Trading System and Monte Carlo----->
+sample.space <- c(-1,1)
+theta <- 0.5  ##this is a fair coin
+N <- length(Close[[1]]) ## match number of flips to total trading days
+
+flips <- sample(sample.space,
+                size = N,
+                replace = TRUE,
+                prob = c(theta, 1 - theta))
+
+Coin.Flip.System <-
+  all.stock.data[[1]] %>%
+    mutate(
+    daily.return = ifelse(row_number() == 1, 0, close / lag(close, 1) - 1),
+
+    signal.return = daily.return *  flips,
+
+    cum.return = cumprod(1+signal.return) - 1)
+
+##Plot one Iteration of the CoinFlip system
+Coin.Flip.1 <- ggplot(Coin.Flip.System, aes(x = Coin.Flip.System$date, y = Coin.Flip.System$cum.return*100)) +
+    geom_line(colour = "#004C99", size = 1) +
+    geom_hline(yintercept = 0, size = 1, colour="#333333") +
+      scale_y_continuous(labels = function(x) paste0(x, "%")) +
+    bbc_style() +
+    labs(title="One Iteration of the Coin Flip System",
+         subtitle = "Cumulative Daily Return of the Coin Flip System | QQQ | 2006-01-01 to 2019-06-30")
+
+finalise_plot(plot_name = Coin.Flip.1,
+    source = "Source: iQFeed.net",
+    save_filepath = "assets/img/Coin.Flip.1.png",
+    width_pixels = 900,
+    height_pixels = 550)
+
+##Monte Carlo simulation
+MC.Coin.Flip.System <-
+  all.stock.data[[1]] %>%
+    mutate(
+    daily.return = ifelse(row_number() == 1, 0, close / lag(close, 1) - 1),
+
+    signal.return = daily.return *  flips,
+
+    cum.return = cumprod(1+signal.return) - 1,
+
+    sd = runSD(daily.return, n = 252)*sqrt(252),
+
+    sd.2 = runSD(daily.return))
+
+MC.Coin.Flip.System.sd <- mean(MC.Coin.Flip.System$sd.2, na.rm = T)
+
+MC.Coin.Flip.System.avg <- mean(MC.Coin.Flip.System$daily.return, na.rm = T)
+
+MC.Coin.Flip.System.generate.path <- function(){
+
+  MC.Coin.Flip.System.days <- length(Close[[1]])
+
+  MC.Coin.Flip.System.changes <-
+
+  rnorm(length(Close[[1]]),mean=(1+MC.Coin.Flip.System.avg),sd=MC.Coin.Flip.System.sd)
+
+  MC.Coin.Flip.System.sample.path <- cumprod(c(Open[[1]][[1]],MC.Coin.Flip.System.changes))
+
+  MC.Coin.Flip.System.closing.price <- MC.Coin.Flip.System.sample.path[days+1]
+
+  return(MC.Coin.Flip.System.closing.price/Open[[1]][[1]]-1)
+}
+
+MC.Coin.Flip.System.runs <- 100000
+MC.Coin.Flip.System.closing <- replicate(runs,MC.Coin.Flip.System.generate.path())
+
+median(MC.Coin.Flip.System.closing)
+mean(MC.Coin.Flip.System.closing)
+quantile(MC.Coin.Flip.System.closing,0.95)
+quantile(MC.Coin.Flip.System.closing,0.05)
+
+Stock.Data <-
+  all.stock.data[[1]] %>%
+    mutate(
+    daily.return = ifelse(row_number() == 1, 0, close / lag(close, 1) - 1),
+
+    cum.daily.return = cumsum(daily.return),
+
+    sd = runSD(daily.return, n = 252)*sqrt(252),
+
+    sd.2 = runSD(daily.return))
+
+MC.sd <- mean(Stock.Data$sd.2, na.rm = T)
+
+MC.avg <- mean(Stock.Data$daily.return, na.rm = T)
+
+generate.path <- function(){
+  days <- length(Close[[1]])
+  changes <- rnorm(length(Close[[1]]),mean=(1+MC.avg),sd=MC.sd)
+  sample.path <- cumprod(c(Open[[1]][[1]],changes))
+  closing.price <- sample.path[days+1]
+  return((closing.price/Open[[1]][[1]]-1))
+}
+
+runs <- 100000
+mc.closing <- replicate(runs,generate.path())
+
+median(mc.closing)
+mean(mc.closing)
+quantile(mc.closing,probs = c(0.05,0.95))
+
+##t-distribution and p-value for Coin Flip System
+t.coin.flip <- (mean(MC.Coin.Flip.System.closing,na.rm = T)-mean(mc.closing))/(sd(MC.Coin.Flip.System.closing)/sqrt(length(MC.Coin.Flip.System.closing)))
+
+p.coin.flip <- 2*pt(-abs(t),df=length(MC.Coin.Flip.System.closing)-1)
+
+##Plot Cumulative Stock Return vs Sample Path
+
+MC.Coin.Flip.System.days <- length(Close[[1]])
+MC.Coin.Flip.System.changes <- rnorm(length(Close[[1]]),mean=(1+MC.Coin.Flip.System.avg),sd=MC.Coin.Flip.System.sd)
+MC.Coin.Flip.System.sample.path <- cumprod(c(Open[[1]][[1]],MC.Coin.Flip.System.changes))
+
+days <- length(Close[[1]])
+changes <- rnorm(length(Close[[1]]),mean=(1+MC.avg),sd=MC.sd)
+sample.path <- cumprod(c(Open[[1]][[1]],changes))
+
+CF.df <- data.frame(cbind(MC.Coin.Flip.System.sample.path,sample.path))
+
+Coin.Flip.2 <-
+    ggplot() +
+
+    geom_line(data = CF.df, aes(x = 1:length(CF.df$MC.Coin.Flip.System.sample.path), y = CF.df$MC.Coin.Flip.System.sample.path), color = "red") +
+
+    geom_line(data = CF.df, aes(x = 1:length(CF.df$sample.path), y = CF.df$sample.path), color="#004C99") +
+
+    geom_line(colour = "#004C99", size = 1) +
+
+    geom_hline(yintercept = 0, size = 1, colour="#333333") +
+
+    scale_y_continuous(labels = function(x) paste0(x, "%")) +
+
+    bbc_style() +
+
+    labs(title="Monte Carlo Simulation Cumulative Return",
+         subtitle = "Coin Flip System vs Underlying | QQQ | 2006-01-01 to 2019-06-30")
+
+finalise_plot(plot_name = Coin.Flip.2,
+    source = "Source: iQFeed.net",
+    save_filepath = "assets/img/Coin.Flip.2.png",
+    width_pixels = 900,
+    height_pixels = 550)
+
+#<-----4. Simple Bollinger Band Strategy----->
+BBand.Avg.Length <- 20
+
+BBand.SD <- 2
+
+BBand.System <-
+  all.stock.data[[1]] %>%
+
+    select(date,open,high,low,close) %>%
+
+    mutate(
+      daily.return = ifelse(row_number() == 1, 0, close / lag(close, 1) - 1),
+
+      cum.daily.return =
+        (cumprod(1+daily.return)-1)*100,
+
+      sd = runSD(daily.return, n = BBand.Avg.Length),
+
+      middle.band = ifelse(row_number() >= BBand.Avg.Length,  rollmean(close, k = BBand.Avg.Length, fill = NA), 0),
+
+      upper.band = ifelse(row_number() >= BBand.Avg.Length,  rollmean(close, k = BBand.Avg.Length, fill = NA) + (BBand.SD * rollmean(sd, k = BBand.Avg.Length, fill = NA, 0)),0),
+
+      lower.band = ifelse(row_number() >= BBand.Avg.Length,  rollmean(close, k = BBand.Avg.Length, fill = NA) - (BBand.SD * rollmean(sd, k = BBand.Avg.Length, fill = NA, 0)),0),
+
+      signal =
+        ifelse(close < lower.band,1,
+          ifelse(close > upper.band,-1,NA)),
+
+      signal.2 =
+        na.locf(signal),
+
+      signal.return = daily.return *  signal.2,
+
+      sd.signal = runSD(signal.return, n = BBand.Avg.Length),
+
+      cum.signal.return = (cumprod(1+signal.return) - 1)*100)
+
+#<----Plot Bollinger Cum Returns vs ETF Cum Returns
+BBand.Ch.1 <- ggplot()  +
+    geom_line(data = BBand.System, aes(x = BBand.System$date, y = BBand.System$cum.daily.return), color = "red") +
+
+    geom_line(data = BBand.System, aes(x = BBand.System$date, y = BBand.System$cum.signal.return), color="#004C99") +
+
+    geom_line(colour = "#004C99", size = 1) +
+
+    geom_hline(yintercept = 0, size = 1, colour="#333333") +
+
+    scale_y_continuous(labels = function(x) paste0(x, "%")) +
+
+    bbc_style() +
+
+    labs(title="Bollinger Bands Strategy",
+         subtitle = "Cumulative Return | QQQ | 2006-01-01 to 2019-06-30")
+
+finalise_plot(plot_name = BBand.Ch.1,
+    source = "Source: iQFeed.net",
+    save_filepath = "assets/img/BBand.Ch.1.png",
+    width_pixels = 900,
+    height_pixels = 550)
+
+#<----Monte Carlo Simulation of BBands Strategy---->
+
+BBand.Stats <-
+  BBand.System %>%
+    select(date,signal.return,cum.signal.return) %>%
+    mutate(
+         cum.signal.return.3m = (cum.signal.return + 1) / lag(cum.signal.return + 1, 63) - 1,
+
+         cum.signal.return.12m = (cum.signal.return + 1) / lag(cum.signal.return + 1, 252) - 1,
+
+         drawdown = (cum.signal.return + 1) / cummax(cum.signal.return + 1) - 1,
+
+         sd.12m = runSD(signal.return, n = 252)*sqrt(252),
+
+         sharpe.12m = SMA(cum.signal.return.12m / sd.12m, 63))
+
+
+BBand.avg <- mean(BBand.System$signal.return,na.rm = T)
+
+BBand.sd <- mean(BBand.System$sd.signal,na.rm = T)
+
+BBand.max.drawdown <- min(BBand.Stats$drawdown,na.rm = T)
+
+BBand.Avg.Sharpe <- BBand.avg/BBand.sd*sqrt(252)
+
+BBand.Cum.Return <- tail(BBand.System$cum.signal.return,n=1)
+
+BBand.Ann.Return <- (1+BBand.Cum.Return/100)^(1/13.5)-1
+
+BBand.avg
+BBand.sd
+BBand.max.drawdown
+BBand.Avg.Sharpe
+BBand.Cum.Return
+BBand.Ann.Return
+
+BBand.path <- function(){
+  days <- length(Close[[1]])
+  changes <- rnorm(length(Close[[1]]),mean=(1+BBand.avg),sd=BBand.sd)
+  sample.path <- cumprod(c(Open[[1]][[1]],changes))
+  closing.price <- sample.path[days+1]
+  return(closing.price/Open[[1]][[1]]-1)
+}
+
+runs <- 100000
+BBand.mc <- replicate(runs,BBand.path())
+
+median(BBand.mc)
+mean(BBand.mc)
+quantile(BBand.mc,0.95)
+quantile(BBand.mc,0.05)
+
+ETF.Stats <-
+  BBand.System %>%
+    mutate(
+         cum.daily.return.3m = (cum.daily.return + 1) / lag(cum.daily.return + 1, 63) - 1,
+
+         cum.daily.return.12m = (cum.daily.return + 1) / lag(cum.daily.return + 1, 252) - 1,
+
+         drawdown = (cum.daily.return + 1) / cummax(cum.daily.return + 1) - 1,
+
+         sd.12m = runSD(daily.return, n = 252)*sqrt(252),
+
+         sharpe.12m = SMA(cum.daily.return.12m / sd.12m, 63))
+
+
+ETF.Stats.avg <- mean(BBand.System$daily.return,na.rm = T)
+
+ETF.Stats.sd <- mean(BBand.System$sd,na.rm = T)
+
+ETF.Stats.max.drawdown <- min(ETF.Stats$drawdown,na.rm = T)
+
+ETF.Stats.Avg.Sharpe <- ETF.Stats.avg/ETF.Stats.sd*(sqrt(252))
+
+ETF.Cum.Return <- tail(BBand.System$cum.daily.return,n=1)
+
+ETF.Ann.Return <- (1+ETF.Cum.Return/100)^(365/trading_days)-1
+
+ETF.Stats.avg
+ETF.Stats.max.drawdown
+ETF.Stats.Avg.Sharpe
+ETF.Cum.Return
+ETF.Ann.Return
+
+ETF.path <- function(){
+  days <- length(Close[[1]])
+  changes <- rnorm(length(Close[[1]]),mean=(1+ETF.Stats.avg),sd=ETF.Stats.sd)
+  sample.path <- cumprod(c(Open[[1]][[1]],changes))
+  closing.price <- sample.path[days+1]
+  return(closing.price/Open[[1]][[1]]-1)
+}
+
+runs <- 100000
+ETF.mc <- replicate(runs,ETF.path())
+
+median(ETF.mc)
+mean(ETF.mc)
+quantile(ETF.mc,probs = c(.05,.95))
+
+t.BBand <- (mean(BBand.mc,na.rm = T)-mean(ETF.mc))/(sd(BBand.mc)/sqrt(length(BBand.mc)))
+
+p.BBand <- 2*pt(-abs(t.BBand),df=length(BBand.mc)-1)
+
+t.BBand
+p.BBand
+
+##Also with t.test(BBand.mc,mu=mean(ETF.mc))

@@ -1,0 +1,332 @@
+##@P65 - Blog Post 5 - Modeling a 1976 Betting System
+##Started:  10/12/2019
+##Posted:  10/24/2019
+
+library(QuantTools)
+library(readxl)
+library(lubridate)
+library(dplyr)
+library(forecast)
+library(devtools)
+library(tidyr)
+library(gapminder)
+library(ggalt)
+library(forcats)
+library(R.utils)
+library(png)
+library(grid)
+library(ggpubr)
+library(scales)
+library(statsr)
+library(PlayerRatings)
+
+#<-----1. Read in the Excel Files---->
+temp = list.files(pattern = "^nfl")
+
+NFL.Odds.Data.2 <-
+    lapply(temp,function(x)(
+        read_excel(x,sheet = "Sheet1")
+    ))
+
+NFL.Odds.Data <-
+  rbindlist(NFL.Odds.Data)
+
+NFL.Odds.Data$ML <- as.numeric(NFL.Odds.Data$ML)
+
+#<-----2.  Separate the Positive and Negative ML Data & Chart Histogram----->
+NFL.Odds.Data.Positive <-
+  NFL.Odds.Data %>% select(ML) %>%
+    group_by(ML) %>%
+    filter(!is.na(ML),ML >= 10,ML <= 500)
+
+NFL.Odds.Data.Negative <-
+  NFL.Odds.Data %>% select(ML) %>%
+    group_by(ML) %>%
+    filter(!is.na(ML),ML >= -500,ML <= -10)
+
+CH.NFL.Odds.Data.Positive <-
+  ggplot(NFL.Odds.Data.Positive, aes(x=ML)) +
+    geom_histogram(aes(y=..density..),binwidth=5,
+colour="black", fill="white") +
+  geom_density(alpha=.2, fill="#FF6666") +
+  ggtitle("Positive Money Line Histogram | NFL Underdogs | 2007 - 2019") + geom_vline(aes(xintercept=mean(ML, na.rm=T)),color="red", linetype="dashed", size=1)
+
+CH.NFL.Odds.Data.Negative <-
+  ggplot(NFL.Odds.Data.Negative, aes(x=ML)) +
+    geom_histogram(aes(y=..density..),binwidth=5,
+colour="black", fill="white") +
+  geom_density(alpha=.2, fill="#FF6666") +
+  ggtitle("Negative Money Line Histogram | NFL Favorites | 2007 - 2019") + geom_vline(aes(xintercept=mean(ML, na.rm=T)),color="red", linetype="dashed", size=1)
+
+summary(NFL.Odds.Data$ML)
+summary(NFL.Odds.Data.Positive$ML)
+summary(NFL.Odds.Data.Negative$ML)
+
+#<-----3.  Calculate the Implied Probabilities & Expected Values----->
+NFL.Odds.Data.Positive.Implied.Prob <-
+  100/(mean(NFL.Odds.Data.Positive$ML)+100)
+
+NFL.Odds.Data.Negative.Implied.Prob <-
+  abs(mean(NFL.Odds.Data.Negative$ML))/(abs(mean(NFL.Odds.Data.Negative$ML))+100)
+
+NFL.Odds.Data.Positive.Implied.Prob
+NFL.Odds.Data.Negative.Implied.Prob
+
+##Solve for Expected Value for Positive and Negative MoneyLine Odds
+Pos.Expected.Value <-
+  (NFL.Odds.Data.Positive.Implied.Prob*mean(NFL.Odds.Data.Positive$ML)) -
+  ((1 - NFL.Odds.Data.Positive.Implied.Prob)* 100)
+
+Neg.Expected.Value <-
+  NFL.Odds.Data.Negative.Implied.Prob*100 -
+  (1 - NFL.Odds.Data.Negative.Implied.Prob)*abs(mean(NFL.Odds.Data.Negative$ML))
+
+
+Pos.Expected.Value
+Neg.Expected.Value
+
+##Add a Win/Loss Column & Profit/Loss from Bet
+NFL.Win.Loss <-
+
+  NFL.Odds.Data %>%
+
+  select(Date,VH,Team,Final,ML,1st,2nd,3rd,4th,Open,Close) %>%
+
+  filter(!is.na(ML)) %>%
+
+  mutate(
+    Win.Loss = ifelse(row(Final)%%2 == 0,ifelse(lag(Final,n = 1) < Final,"W","L"),ifelse(lead(Final,n = 1) < Final,"W","L")),
+
+    Profit.Loss = ifelse(ML < 0, ifelse(Win.Loss == "W",100,ML),ifelse(Win.Loss == "W",ML,-100)),
+
+    PosML.Dogs.PL = ifelse(ML > 0,Profit.Loss,0),
+
+    NegML.Fav.PL = ifelse(ML < 0, Profit.Loss,0)
+    )
+
+##Calculate the Actual winning percentage and Chart P&L for Favorites and Underdogs
+PosML.Dogs.WP <- length(which(NFL.Win.Loss$PosML.Dogs.PL > 0))/(length(which(NFL.Win.Loss$PosML.Dogs.PL < 0))+length(which(NFL.Win.Loss$PosML.Dogs.PL > 0)))
+
+NegML.Fav.WP <- length(which(NFL.Win.Loss$NegML.Fav.PL > 0))/(length(which(NFL.Win.Loss$NegML.Fav.PL < 0))+length(which(NFL.Win.Loss$NegML.Fav.PL > 0)))
+
+PosML.Dogs.WP
+NegML.Fav.WP
+
+CH.PosML.Dogs.PL <-
+  ggplot(NFL.Win.Loss, aes(x = (1:length(NFL.Win.Loss$PosML.Dogs.PL)), y = cumsum(NFL.Win.Loss$PosML.Dogs.PL))) +
+  geom_line() +
+  geom_point() +
+  labs(title="Cumulative Profit Loss ($100 Bet)",subtitle = "NFL Underdogs | 2007-2008 Season to 2019-2020 Season",x="Count", y = "Cumulative Profit/Loss ($)")
+
+CH.NegML.Fav.PL <-
+  ggplot(NFL.Win.Loss, aes(x = (1:length(NFL.Win.Loss$NegML.Fav.PL)), y = cumsum(NFL.Win.Loss$NegML.Fav.PL))) +
+  geom_line() +
+  geom_point() +
+  labs(title="Cumulative Profit Loss ($100 Bet)",subtitle = "NFL Favorites | 2007-2008 Season to 2019-2020 Season",x="Count", y = "Cumulative Profit/Loss ($)")
+
+##Solving for System Minimum
+Pos.ML.Min <- 100
+Pos.ML.Max <- 1000
+Neg.ML.Min <- -1000
+Neg.ML.Max <- -100
+
+##Solve for Positive ML, Implied Odds and EV
+Pos.ML    <-  seq(Pos.ML.Min,Pos.ML.Max,10)
+Pos.Odds  <-  1/(Pos.ML/100+1)
+Pos.DF    <-  as.data.frame(cbind(Pos.ML,Pos.Odds*100))
+
+##Solve for Negative ML, Implied Odds and EV
+Neg.ML    <-  seq(Neg.ML.Min,Neg.ML.Max,10)
+Neg.Odds  <-  1/((100/abs(Neg.ML))+1)
+Neg.DF   <-  as.data.frame(cbind(Neg.ML,Neg.Odds*100))
+
+CH.PosML.Dogs.Min <-
+    ggplot(Pos.DF, aes(x = Pos.ML, y = V2)) +
+    geom_line() +
+    geom_point() +
+    labs(title="Money Line Implied Odds - Underdogs",x="Positive Money Line", y = "Percentage Odds (%)") +
+    geom_ribbon(aes(x=Pos.ML, ymin=9, ymax=V2), data=Pos.DF, fill="#BB000033") +
+    geom_ribbon(aes(x=Pos.ML, ymin=V2, ymax=50), data=Pos.DF, fill="#3CB371") +
+    annotation_custom(grid.text("Profitable", x=0.7,  y=0.8, gp=gpar(col="white", fontsize=14, fontface="bold"))) +
+    annotation_custom(grid.text("Non-Profitable", x=0.3,  y=0.1, gp=gpar(col="firebrick", fontsize=12, fontface="bold")))
+
+
+CH.NegML.Fav.Min <-
+    ggplot(Neg.DF, aes(x = Neg.ML, y = V2)) +
+    geom_line() +
+    geom_point() +
+    labs(title="Money Line Implied Odds - Favorites",x="Negative Money Line", y = "Percentage Odds (%)") +
+    geom_ribbon(aes(x=Neg.ML, ymin=V2, ymax=100), data=Neg.DF, fill="#3CB371") +
+    geom_ribbon(aes(x=Neg.ML, ymin=50, ymax=V2), data=Neg.DF, fill="#BB000033") +
+    annotation_custom(grid.text("Profitable", x=0.7,  y=0.8, gp=gpar(col="white", fontsize=14, fontface="bold"))) +
+    annotation_custom(grid.text("Non-Profitable", x=0.3,  y=0.1, gp=gpar(col="firebrick", fontsize=12, fontface="bold")))
+
+##<--------Testing--------->
+
+##<--------Add Margin of Victory--------->
+NFL.Test <-
+
+  NFL.Odds.Data %>%
+
+  filter(!is.na(ML)) %>%
+
+  mutate(
+    Win.Loss = ifelse(VH == "H",ifelse(lag(Final,n = 1) < Final,"W","L"),ifelse(lead(Final,n = 1) < Final,"W","L")),
+
+    Profit.Loss = ifelse(ML < 0, ifelse(Win.Loss == "W",100,ML),ifelse(Win.Loss == "W",ML,-100)),
+
+    PosML.Dogs.PL = ifelse(ML > 0,Profit.Loss,0),
+
+    NegML.Fav.PL = ifelse(ML < 0, Profit.Loss,0),
+
+    Margin = ifelse(VH == "V", Final - lead(Final,n = 1),Final - lag(Final,n = 1)),
+    )
+
+#Chart Margin of Victory and Normal Dist
+CH.Margin.Victory <-
+  ggplot(NFL.Test, aes(x=Margin)) +
+    geom_histogram(aes(y=..density..),binwidth=1,
+             colour="black", fill="white") +
+  stat_function(
+fun = dnorm,args = with(NFL.Test,
+    c(mean = mean(Margin,na.rm = T), sd = sd(Margin,na.rm = T)))
+) +
+  ggtitle("Distribution of NFL Margin of Victory/Loss | 2007 - 2019") +
+  geom_vline(aes(xintercept=mean(Margin,na.rm=T)),color="red", linetype="dashed", size=1)
+
+##<--------compres and comperank packages--------->
+install.packages("comperes")
+install.packages("comperank")
+library("comperes")
+library("comperank")
+library("rlang")
+
+##<------Prepare Data for compres------>
+q <-
+  NFL.Odds.Data %>% select(Rot,Team,Final)
+names(q) <-
+  (c("game","player","score"))
+q1 <-
+  rep(1:(length(q$game)/2),each = 2)
+q$game <-
+  q1
+q <-
+  q %>% filter(!is.na(score))
+q.in.sample <-
+  q %>% filter(game <= 3298)
+q.out.sample <-
+  q %>% filter(game > 3298)
+q3 <-
+  q.in.sample %>% h2h_long(!!! h2h_funs)
+q3 <-
+  q3 %>% filter(!is.na(num_wins),!is.na(mean_score_diff),player1 != player2)
+
+##<------Correlation matrix------>
+q4 <- q3[,c(3:11)]
+round(cor(q4),2)
+
+##<------Quick plot of num_wins and sum_score_diff_pos------>
+q5 <- lm(formula=mean_score_diff~mean_score,data=q3)
+CH.q5 <- plot(q3$mean_score,q3$mean_score_diff)
+abline(q5)
+summary(q5)
+
+##prepare out of sample data
+q6 <- q.out.sample %>% h2h_long(!!! h2h_funs)
+q6 <- q6 %>% filter(!is.na(num_wins),!is.na(mean_score_diff),player1 != player2)
+
+##Compare out of sample predictions to in-sample Predictions
+predicted.is <- predict(q5,type = "response") #in-sample prediction
+actual.is <- q3$mean_score_diff #in-sample actual
+error.is <- sqrt(mean((predicted.is - actual.is)^2)) #in-sample error
+
+predicted.os <- predict(q5,q6,type = "response") #out-of-sample prediction
+actual.os <- q6$mean_score_diff #out-of-sample actual
+error.os <- sqrt(mean((predicted.os - actual.os)^2)) #out-of-sample error
+
+##Did the projection predict the same +/- win margin (actual was a + and predicted was a + etc)? 1 for a correct prediction and a 0 for an incorrect prediction
+q7 <- ifelse((predicted.is <= 0 & actual.is <= 0) | (predicted.is >= 0 & actual.is >= 0),1,0) ##in-sample correct/incorrect Predictions
+in.sample.Win.Loss <- sum(unlist(q7))/length(q7)
+
+q8 <- ifelse((predicted.os <= 0 & actual.os <= 0) | (predicted.os >= 0 & actual.os >= 0),1,0) ##out-of-sample correct/incorrect Predictions
+out.sample.Win.Loss <- sum(unlist(q8))/length(q8)
+
+in.sample.Win.Loss
+out.sample.Win.Loss
+
+##Single Regresssion W/L Percent
+Num.Loss.P1 <- q6$num - q6$num_wins
+q6 <- cbind.data.frame(q6,Num.Loss.P1,actual.os,predicted.os)
+OS.WL.1 <- ifelse(q6$predicted.os > 0,q6$num_wins,ifelse(q6$predicted.os < 0,q6$Num.Loss.P1,0))
+Win.Percent.OS <- sum(OS.WL.1)/sum(q6$num)
+
+IS.Num.Loss.P1 <- q3$num - q3$num_wins
+q3 <- cbind.data.frame(q3,IS.Num.Loss.P1,actual.is,predicted.is)
+IS.WL.1 <- ifelse(q3$predicted.is > 0,q3$num_wins,ifelse(q3$predicted.is < 0,q3$IS.Num.Loss.P1,0))
+Win.Percent.IS <- sum(IS.WL.1)/sum(q3$num)
+
+Win.Percent.IS
+Win.Percent.OS
+
+##Interactive statsr plot with error and least squares
+plot_ss(x = q3$sum_score_diff_pos, y = q3$num_wins, data = q3)
+plot_ss(x = q3$sum_score_diff_pos, y = q3$num_wins, data = q3, showSquares = TRUE)
+
+##<-----Multiple regression------>
+fit <- lm(formula = mean_score_diff~mean_score_diff_pos+mean_score+sum_score_diff+sum_score_diff_pos+sum_score+num_wins,data = q3)
+summary(fit)
+
+MR.predicted.is <- predict(fit,type = "response")
+MR.actual.is <- q3$mean_score_diff #in-sample actual
+MR.error.is <- sqrt(mean((MR.predicted.is - MR.actual.is)^2)) #in-sample error
+
+MR.predicted.os <- predict(fit,newdata = q6,type = "response")
+MR.actual.os <- q6$mean_score_diff
+MR.error.os <- sqrt(mean((MR.predicted.os - MR.actual.os)^2)) #out-of-sample error
+
+MR.q7 <- ifelse((MR.predicted.is <= 0 & MR.actual.is <= 0) | (MR.predicted.is >= 0 & MR.actual.is >= 0),1,0)
+MR.in.sample.Win.Loss <- sum(unlist(MR.q7))/length(MR.q7)
+
+MR.q8 <- ifelse((MR.predicted.os < 0 & MR.actual.os < 0) | (MR.predicted.os > 0 & MR.actual.os > 0),1,0)
+MR.out.sample.Win.Loss <- sum(unlist(MR.q8))/length(MR.q8)
+
+MR.in.sample.Win.Loss
+MR.out.sample.Win.Loss
+
+##Multiple Regresssion W/L Percent
+MR.q3 <-
+  q.in.sample %>% h2h_long(!!! h2h_funs)
+MR.q3 <-
+  MR.q3 %>% filter(!is.na(num_wins),!is.na(mean_score_diff),player1 != player2)
+
+MR.IS.Num.Loss.P1 <- MR.q3$num - MR.q3$num_wins
+MR.q3 <- cbind.data.frame(MR.q3,MR.IS.Num.Loss.P1,MR.actual.is,MR.predicted.is)
+MR.IS.WL.1 <- ifelse(MR.q3$MR.predicted.is > 0,MR.q3$num_wins,ifelse(MR.q3$MR.predicted.is < 0,MR.q3$MR.IS.Num.Loss.P1,0))
+MR.Win.Percent.IS <- sum(MR.IS.WL.1)/sum(MR.q3$num)
+
+MR.q6 <- q.out.sample %>% h2h_long(!!! h2h_funs)
+MR.q6 <- MR.q6 %>% filter(!is.na(num_wins),!is.na(mean_score_diff),player1 != player2)
+
+MR.OS.Num.Loss.P1 <- MR.q6$num - MR.q6$num_wins
+MR.q6 <- cbind.data.frame(MR.q6,MR.OS.Num.Loss.P1,MR.actual.os,MR.predicted.os)
+MR.OS.WL.1 <- ifelse(MR.q6$MR.predicted.os > 0,MR.q6$num_wins,ifelse(MR.q6$MR.predicted.os < 0,MR.q6$MR.OS.Num.Loss.P1,0))
+MR.Win.Percent.OS <- sum(MR.OS.WL.1)/sum(MR.q6$num)
+
+MR.Win.Percent.IS
+MR.Win.Percent.OS
+
+<-----TRASH HEAP--->
+a <- to_pairgames(q.in.sample)
+a.1 <- a %>% mutate(Win.Margin = score1 - score2)
+a.1.unique <- unique(a.1$player1)
+a.2 <- lapply(a.1.unique,function(x)(a.1 %>% filter(player1 == "x")))
+
+a.1 <- a %>% mutate(Win.Margin = score1 - score2,Avg.Score.1 = cummean(score1),Avg.Score.2 = cummean(score2),W.Margin.1 = cummean(score1 - score2),W.Margin.2 = cummean(score2-score1))
+
+rate_fun <- function(rating1, score1, rating2, score2) {c(rating1, rating2) + c(score1-score2,score2-score1)}
+
+rate_fun_massey <- function(rating1, score1, rating2, score2) {c(rating1, rating2) + c((score1-score2)/2,(score2-score1)/2)}
+
+a.3 <- add_iterative_ratings(a.1,rate_fun_massey)
+
+a.4 <- a.3 %>% mutate(Pred = ifelse((rating1Before > rating2Before & (score1 - score2)>0)|(rating1Before < rating2Before & (score1 - score2)<0),1,0),Win.Margin = score1 - score2,Avg.Score.1 = cummean(score1),Avg.Score.2 = cummean(score2),W.Margin.1 = cummean(score1 - score2),W.Margin.2 = cummean(score2-score1))
